@@ -10,6 +10,7 @@ import {
   TypingEvent,
   HandshakeEvent,
 } from "@/lib/types";
+import { Toaster, toast } from "react-hot-toast";
 
 import ChatList from "@/components/ChatList";
 import ChatView from "@/components/ChatView";
@@ -28,6 +29,8 @@ const Home = () => {
 
   const connections = useRef<Map<string, DataConnection>>(new Map());
   const typingTimeout = useRef<Map<string, NodeJS.Timeout>>(new Map());
+  const selectedChatIdRef = useRef(selectedChatId);
+  selectedChatIdRef.current = selectedChatId;
 
   // Load user ID from localStorage on mount
   useEffect(() => {
@@ -116,12 +119,11 @@ const Home = () => {
   };
 
   const setupConnection = (conn: DataConnection) => {
-    // Ensure we don't set up the same connection twice and avoid race conditions
     const existingConn = connections.current.get(conn.peer);
-    if(existingConn) {
-        console.log(`Connection with ${conn.peer} already exists. Closing new one.`);
-        conn.close();
-        return;
+    if (existingConn) {
+      console.log(`Replacing existing connection to ${conn.peer} with new one.`);
+      existingConn.removeAllListeners();
+      existingConn.close();
     }
     
     connections.current.set(conn.peer, conn);
@@ -131,13 +133,27 @@ const Home = () => {
       
       switch (event.type) {
         case "message":
-          setChats((prev) =>
-            prev.map((chat) =>
+          setChats((prev) => {
+            const isChatSelected = selectedChatIdRef.current === conn.peer;
+
+            if (!isChatSelected) {
+              const fromChat = prev.find(c => c.peerId === conn.peer);
+              const fromName = fromChat?.alias || conn.peer;
+              toast.success(`New message from ${fromName}`);
+            }
+
+            return prev.map((chat) =>
               chat.peerId === conn.peer
-                ? { ...chat, messages: [...chat.messages, event as Message] }
+                ? {
+                    ...chat,
+                    messages: [...chat.messages, event as Message],
+                    unreadCount: isChatSelected
+                      ? 0
+                      : (chat.unreadCount || 0) + 1,
+                  }
                 : chat
-            )
-          );
+            );
+          });
           break;
         case "typing-start":
           setTypingPeers((prev) => new Set(prev).add(conn.peer));
@@ -191,23 +207,27 @@ const Home = () => {
 
     conn.on("close", () => {
       console.log(`Connection to ${conn.peer} closed.`);
-      connections.current.delete(conn.peer);
-      setChats((prev) =>
-        prev.map((chat) =>
-          chat.peerId === conn.peer ? { ...chat, status: "disconnected" } : chat
-        )
-      );
+      if (connections.current.get(conn.peer) === conn) {
+        connections.current.delete(conn.peer);
+        setChats((prev) =>
+          prev.map((chat) =>
+            chat.peerId === conn.peer ? { ...chat, status: "disconnected" } : chat
+          )
+        );
+      }
     });
 
     conn.on("error", (err) => {
        // This handles errors on an already established connection.
        console.error(`Connection error with ${conn.peer}:`, err);
-       connections.current.delete(conn.peer);
-       setChats((prev) =>
-        prev.map((chat) =>
-          chat.peerId === conn.peer ? { ...chat, status: "disconnected" } : chat
-        )
-      );
+       if (connections.current.get(conn.peer) === conn) {
+         connections.current.delete(conn.peer);
+         setChats((prev) =>
+          prev.map((chat) =>
+            chat.peerId === conn.peer ? { ...chat, status: "disconnected" } : chat
+          )
+        );
+       }
     })
   };
 
@@ -233,6 +253,11 @@ const Home = () => {
     if (chat && chat.status === 'disconnected') {
       connectToPeer(peerId);
     }
+    setChats((prev) =>
+      prev.map((chat) =>
+        chat.peerId === peerId ? { ...chat, unreadCount: 0 } : chat
+      )
+    );
     setSelectedChatId(peerId);
   }
 
@@ -306,6 +331,7 @@ const Home = () => {
         </div>
       ) : (
         <>
+          <Toaster />
           <AddChatModal
             isOpen={isModalOpen}
             onClose={() => setIsModalOpen(false)}

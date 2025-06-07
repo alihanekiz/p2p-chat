@@ -27,4 +27,5 @@ export interface ChatThread {
   alias?: string;
   messages: Message[];
   status: ConnectionStatus;
+  unreadCount?: number;
 } 

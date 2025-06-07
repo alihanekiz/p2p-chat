@@ -57,7 +57,11 @@ const ChatListItem = ({ chat, isSelected, onSelectChat, onUpdateAlias, isTyping 
           >
             {chat.alias || chat.peerId}
           </p>
-          <span className="text-xs text-gray-500">double click to edit</span>
+          {chat.unreadCount && chat.unreadCount > 0 ? (
+            <span className="bg-green-500 text-white text-xs rounded-full h-5 w-5 flex items-center justify-center">
+              {chat.unreadCount}
+            </span>
+          ) : <span className="text-xs text-gray-500">double click to edit</span>}
         </div>
       )}
       <p className="text-sm text-gray-400 truncate h-5">
