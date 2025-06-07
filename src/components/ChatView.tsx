@@ -11,9 +11,18 @@ interface ChatViewProps {
   connectionStatus: string;
   onTypingEvent: (peerId: string, type: "typing-start" | "typing-stop") => void;
   isTyping: boolean;
+  onReconnect: (peerId: string) => void;
 }
 
-const ChatView = ({ chat, ownPeerId, onSendMessage, connectionStatus, onTypingEvent, isTyping }: ChatViewProps) => {
+const ChatView = ({
+  chat,
+  ownPeerId,
+  onSendMessage,
+  connectionStatus,
+  onTypingEvent,
+  isTyping,
+  onReconnect,
+}: ChatViewProps) => {
   const [message, setMessage] = useState("");
   const lastMessageRef = useRef<HTMLDivElement | null>(null);
   const typingTimer = useRef<NodeJS.Timeout | null>(null);
@@ -53,7 +62,6 @@ const ChatView = ({ chat, ownPeerId, onSendMessage, connectionStatus, onTypingEv
     switch (connectionStatus) {
       case 'connected': return 'text-green-400';
       case 'connecting': return 'text-yellow-400';
-      case 'error': return 'text-red-400';
       default: return 'text-gray-400';
     }
   }
@@ -76,6 +84,17 @@ const ChatView = ({ chat, ownPeerId, onSendMessage, connectionStatus, onTypingEv
         </div>
       </div>
       <div className="flex-grow p-4 overflow-y-auto">
+        {connectionStatus === 'disconnected' && (
+          <div className="text-center my-4">
+              <p className="text-gray-400 mb-2">You are disconnected.</p>
+              <button
+                onClick={() => onReconnect(chat.peerId)}
+                className="px-4 py-2 bg-blue-600 text-white font-semibold rounded-lg shadow-md hover:bg-blue-700 transition"
+              >
+                Connect to Peer
+              </button>
+          </div>
+        )}
         <div className="flex flex-col gap-4">
           {chat.messages.map((msg, index) => (
             <div

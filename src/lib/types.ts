@@ -10,14 +10,17 @@ export interface TypingEvent {
     sender: string;
 }
 
-export type PeerData = Message | TypingEvent;
+export interface HandshakeEvent {
+  type: "handshake-init" | "handshake-ack";
+  sender: string;
+}
+
+export type PeerData = Message | TypingEvent | HandshakeEvent;
 
 export type ConnectionStatus =
   | "disconnected"
   | "connecting"
-  | "connected"
-  | "error"
-  | "pending";
+  | "connected";
 
 export interface ChatThread {
   peerId: string;

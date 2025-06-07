@@ -3,7 +3,13 @@
 import { useState, useEffect, useRef } from "react";
 import { v4 as uuidv4 } from "uuid";
 import Peer, { DataConnection } from "peerjs";
-import { ChatThread, Message, PeerData, TypingEvent } from "@/lib/types";
+import {
+  ChatThread,
+  Message,
+  PeerData,
+  TypingEvent,
+  HandshakeEvent,
+} from "@/lib/types";
 
 import ChatList from "@/components/ChatList";
 import ChatView from "@/components/ChatView";
@@ -36,11 +42,14 @@ const Home = () => {
   useEffect(() => {
     if (!isRegistered || !userId) return;
 
+    // Destroy any existing peer instance before creating a new one
+    if (peer) {
+      peer.destroy();
+    }
+
     const newPeer = new Peer(userId, {
       // For production, you'll need a deployed PeerJS server.
-      // host: "localhost",
-      // port: 9000,
-      // path: "/myapp",
+      // We use the default cloud server for simplicity.
     });
 
     setPeer(newPeer);
@@ -48,22 +57,45 @@ const Home = () => {
     newPeer.on("open", (id) => {
       setOwnPeerId(id);
       const loadedChats = JSON.parse(localStorage.getItem("chats") || "[]");
-      setChats(loadedChats);
-      // Re-establish connections for existing chats
-      loadedChats.forEach((chat: ChatThread) => {
-        if(chat.peerId) connectToPeer(chat.peerId);
-      })
+      // Mark all loaded chats as disconnected initially
+      const initialChats = loadedChats.map((chat: ChatThread) => ({ ...chat, status: "disconnected" }));
+      setChats(initialChats);
     });
 
     newPeer.on("connection", (conn) => {
+      console.log(`Incoming connection from ${conn.peer}`);
       setupConnection(conn);
     });
 
     newPeer.on("error", (err) => {
-      console.error("PeerJS error:", err);
+      console.error("PeerJS error name:", err.name);
+      console.error("PeerJS error type:", err.type);
+
+      if (err.type === 'peer-unavailable') {
+        const peerId = (err as any).peer;
+        console.log(`Could not connect to peer ${peerId}. They appear to be offline.`);
+        setChats((prev) => 
+          prev.map((chat) => 
+            chat.peerId === peerId ? { ...chat, status: "disconnected" } : chat
+          )
+        );
+      } else {
+        console.error("A critical PeerJS error occurred:", err);
+      }
+    });
+    
+    newPeer.on('disconnected', () => {
+        console.log("Peer disconnected from the server. Attempting to reconnect...");
+        setChats(prev => prev.map(chat => ({...chat, status: 'disconnected'})));
+        setTimeout(() => {
+            if (!newPeer.destroyed) {
+                newPeer.reconnect();
+            }
+        }, 5000);
     });
 
     return () => {
+      console.log("Destroying peer instance");
       newPeer.destroy();
     };
   }, [isRegistered, userId]);
@@ -84,6 +116,16 @@ const Home = () => {
   };
 
   const setupConnection = (conn: DataConnection) => {
+    // Ensure we don't set up the same connection twice and avoid race conditions
+    const existingConn = connections.current.get(conn.peer);
+    if(existingConn) {
+        console.log(`Connection with ${conn.peer} already exists. Closing new one.`);
+        conn.close();
+        return;
+    }
+    
+    connections.current.set(conn.peer, conn);
+
     conn.on("data", (data) => {
       const event = data as PeerData;
       
@@ -121,22 +163,34 @@ const Home = () => {
             return newSet;
           });
           break;
+        case "handshake-init":
+          conn.send({ type: "handshake-ack", sender: ownPeerId } as HandshakeEvent);
+          setChats((prev) =>
+            prev.map((chat) =>
+              chat.peerId === conn.peer ? { ...chat, status: "connected" } : chat
+            )
+          );
+          break;
+        case "handshake-ack":
+          setChats((prev) =>
+            prev.map((chat) =>
+              chat.peerId === conn.peer ? { ...chat, status: "connected" } : chat
+            )
+          );
+          break;
       }
     });
 
     conn.on("open", () => {
-      connections.current.set(conn.peer, conn);
-      setChats((prev) =>
-        prev.map((chat) =>
-          chat.peerId === conn.peer ? { ...chat, status: "connected" } : chat
-        )
-      );
-      if (!chats.some(chat => chat.peerId === conn.peer)) {
-         addNewChat(conn.peer, "connected");
+      // This is the initiator of the connection, start the handshake
+      if(ownPeerId > conn.peer) {
+        console.log(`Connection to ${conn.peer} is open. Sending handshake-init.`);
+        conn.send({ type: "handshake-init", sender: ownPeerId } as HandshakeEvent);
       }
     });
 
     conn.on("close", () => {
+      console.log(`Connection to ${conn.peer} closed.`);
       connections.current.delete(conn.peer);
       setChats((prev) =>
         prev.map((chat) =>
@@ -144,15 +198,45 @@ const Home = () => {
         )
       );
     });
+
+    conn.on("error", (err) => {
+       // This handles errors on an already established connection.
+       console.error(`Connection error with ${conn.peer}:`, err);
+       connections.current.delete(conn.peer);
+       setChats((prev) =>
+        prev.map((chat) =>
+          chat.peerId === conn.peer ? { ...chat, status: "disconnected" } : chat
+        )
+      );
+    })
   };
 
   const connectToPeer = (peerId: string) => {
-    if (!peer) return;
-    const conn = peer.connect(peerId);
+    if (!peer || peer.disconnected || connections.current.has(peerId)) return;
+    
+    // Only the peer with the greater ID should initiate the connection
+    if (ownPeerId < peerId) {
+      console.log(`[Passive] Waiting for ${peerId} to connect.`);
+      setChats(prev => prev.map(c => c.peerId === peerId ? {...c, status: 'connecting'} : c));
+      return;
+    }
+
+    console.log(`[Initiator] Attempting to connect to ${peerId}`);
+    setChats(prev => prev.map(c => c.peerId === peerId ? {...c, status: 'connecting'} : c));
+    
+    const conn = peer.connect(peerId, { reliable: true });
     setupConnection(conn);
   };
   
-  const addNewChat = (peerId: string, status: "pending" | "connected" = "pending") => {
+  const handleSelectChat = (peerId: string) => {
+    const chat = chats.find(c => c.peerId === peerId);
+    if (chat && chat.status === 'disconnected') {
+      connectToPeer(peerId);
+    }
+    setSelectedChatId(peerId);
+  }
+
+  const addNewChat = (peerId: string) => {
     if (peerId === ownPeerId) {
       alert("You can't chat with yourself!");
       return;
@@ -164,14 +248,11 @@ const Home = () => {
       const newChat: ChatThread = {
         peerId,
         messages: [],
-        status: status,
+        status: "disconnected", // Always start as disconnected
       };
       return [...prev, newChat];
     });
     setSelectedChatId(peerId);
-    if(status === 'pending') {
-      connectToPeer(peerId);
-    }
   };
 
   const handleSendMessage = (peerId: string, content: string) => {
@@ -234,7 +315,7 @@ const Home = () => {
              <ChatList
                 chats={chats}
                 selectedChatId={selectedChatId}
-                onSelectChat={setSelectedChatId}
+                onSelectChat={handleSelectChat}
                 onAddChat={() => setIsModalOpen(true)}
                 ownPeerId={ownPeerId}
                 onUpdateAlias={handleUpdateAlias}
@@ -250,6 +331,7 @@ const Home = () => {
                 connectionStatus={selectedChat.status}
                 onTypingEvent={sendTypingEvent}
                 isTyping={typingPeers.has(selectedChat.peerId)}
+                onReconnect={connectToPeer}
               />
             ) : (
               <div className="flex items-center justify-center h-full">
