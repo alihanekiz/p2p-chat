@@ -107,6 +107,8 @@ const Home = () => {
   useEffect(() => {
     if(chats.length > 0) {
       localStorage.setItem("chats", JSON.stringify(chats));
+    } else {
+      localStorage.removeItem("chats");
     }
   }, [chats]);
 
@@ -116,6 +118,25 @@ const Home = () => {
         chat.peerId === peerId ? { ...chat, alias: alias.trim() } : chat
       )
     );
+  };
+
+  const handleDeleteChat = (peerId: string) => {
+    // Close and remove the connection
+    const conn = connections.current.get(peerId);
+    if (conn) {
+      conn.close();
+      connections.current.delete(peerId);
+    }
+
+    // Remove the chat from the state
+    setChats((prev) => prev.filter((chat) => chat.peerId !== peerId));
+
+    // If the deleted chat was the selected one, unselect it
+    if (selectedChatId === peerId) {
+      setSelectedChatId(null);
+    }
+
+    toast.success("Chat deleted successfully.");
   };
 
   const setupConnection = (conn: DataConnection) => {
@@ -346,6 +367,7 @@ const Home = () => {
                 ownPeerId={ownPeerId}
                 onUpdateAlias={handleUpdateAlias}
                 typingPeers={typingPeers}
+                onDeleteChat={handleDeleteChat}
               />
           </div>
           <div className="flex flex-col w-full">
